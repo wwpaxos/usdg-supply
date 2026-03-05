@@ -163,6 +163,38 @@
     .refresh-btn.spinning svg { animation: spin 0.7s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
 
+    .follow-x-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 12px 6px 10px;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--muted);
+      text-decoration: none;
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
+      font-family: 'Sohne', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    }
+
+    .follow-x-btn:hover {
+      color: var(--text);
+      border-color: rgba(243, 245, 240, 0.3);
+      background: #1E1E1E;
+    }
+
+    .follow-x-btn svg { width: 13px; height: 13px; flex-shrink: 0; }
+
+    .green-highlight {
+      background: var(--green);
+      color: var(--bg);
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-weight: 400;
+    }
+
     /* Hero */
     .hero {
       text-align: center;
@@ -683,6 +715,10 @@
       </svg>
     </a>
     <div class="header-right">
+      <a class="follow-x-btn" href="https://x.com/global_dollar" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" fill="currentColor" width="13" height="13"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+        Follow on X
+      </a>
       <div class="live-badge">
         <div class="live-dot"></div>
         Live
@@ -697,9 +733,9 @@
   </header>
 
   <section class="hero">
-    <div class="hero-label">Total USDG in Circulation</div>
+    <div class="hero-label">USDG Market Cap</div>
     <div class="hero-amount loading" id="totalSupply">Loading...</div>
-    <p class="hero-desc">Global Dollar Network is the world's fastest-growing stablecoin network with unmatched economic upside. Powered by Global Dollar (USDG), a US dollar-backed stablecoin issued by Paxos Digital Singapore and Paxos Issuance Europe, Global Dollar Network offers a transparent and equitable economic model that rewards partners for their contributions.</p>
+    <p class="hero-desc">Global Dollar Network is the world's fastest-growing stablecoin network with unmatched economic upside. Powered by <mark class="green-highlight">Global Dollar (USDG)</mark>, a US dollar-backed stablecoin issued by Paxos Digital Singapore and Paxos Issuance Europe, Global Dollar Network offers a transparent and equitable economic model that rewards partners for their contributions.</p>
     <div class="hero-updated" id="lastUpdated"></div>
   </section>
 
@@ -998,13 +1034,6 @@ async function fetchAll() {
     }
   });
 
-  heroEl.classList.remove('loading');
-  if (total > 0) {
-    heroEl.textContent = '$' + fmt(total);
-  } else {
-    heroEl.textContent = '\u2014';
-  }
-
   CHAINS.forEach(chain => updateCard(chain, supplies[chain.id], total));
 
   const ts = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -1012,6 +1041,44 @@ async function fetchAll() {
 
   btn.classList.remove('spinning');
   isFetching = false;
+}
+
+// ── Hero Market Cap (from CoinGecko) ──────────────────────────────────────
+async function fetchHeroMarketCap() {
+  const heroEl = document.getElementById('totalSupply');
+  try {
+    const url = 'https://api.coingecko.com/api/v3/simple/price?ids=global-dollar&vs_currencies=usd&include_market_cap=true';
+    const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    if (!res.ok) {
+      // Fallback ID
+      const url2 = 'https://api.coingecko.com/api/v3/simple/price?ids=global-dollar-network&vs_currencies=usd&include_market_cap=true';
+      const res2 = await fetch(url2, { signal: AbortSignal.timeout(10000) });
+      if (!res2.ok) throw new Error('CoinGecko HTTP ' + res2.status);
+      const data2 = await res2.json();
+      const entry = data2['global-dollar-network'];
+      if (entry && entry.usd_market_cap) {
+        heroEl.classList.remove('loading');
+        heroEl.textContent = '$' + fmt(Math.round(entry.usd_market_cap));
+        return;
+      }
+      throw new Error('No market cap in response');
+    }
+    const data = await res.json();
+    const entry = data['global-dollar'];
+    if (entry && entry.usd_market_cap) {
+      heroEl.classList.remove('loading');
+      heroEl.textContent = '$' + fmt(Math.round(entry.usd_market_cap));
+    } else {
+      throw new Error('No market cap in response');
+    }
+  } catch (e) {
+    console.warn('[USDG] Hero market cap fetch failed:', e.message);
+    // Fallback: leave whatever is there, or show dash
+    if (heroEl.textContent === 'Loading...') {
+      heroEl.classList.remove('loading');
+      heroEl.textContent = '\u2014';
+    }
+  }
 }
 
 // ── Market Cap Chart ──────────────────────────────────────────────────────
@@ -1518,18 +1585,21 @@ async function initTxFeed() {
 
 // ── Init ──────────────────────────────────────────────────────────────────
 buildCards();
+fetchHeroMarketCap();
 fetchAll();
 fetchMarketCap(currentDays);
 setupChartTooltip();
 initTxFeed();
 
 document.getElementById('refreshBtn').addEventListener('click', () => {
+  fetchHeroMarketCap();
   fetchAll();
   fetchMarketCap(currentDays);
   fetchAllTransfers();
 });
 
-// Auto-refresh every 60s
+// Auto-refresh: hero market cap every 30s, chain supply every 60s
+setInterval(fetchHeroMarketCap, 30_000);
 setInterval(fetchAll, 60_000);
 </script>
 </body>
