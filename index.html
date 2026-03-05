@@ -193,7 +193,11 @@
       padding: 1px 5px;
       border-radius: 3px;
       font-weight: 400;
+      transition: background 0.15s;
     }
+
+    a:has(.green-highlight) { text-decoration: none; }
+    .green-highlight:hover { background: var(--green-dim); }
 
     /* Hero */
     .hero {
@@ -735,7 +739,7 @@
   <section class="hero">
     <div class="hero-label">USDG Market Cap</div>
     <div class="hero-amount loading" id="totalSupply">Loading...</div>
-    <p class="hero-desc">Global Dollar Network is the world's fastest-growing stablecoin network with unmatched economic upside. Powered by <mark class="green-highlight">Global Dollar (USDG)</mark>, a US dollar-backed stablecoin issued by Paxos Digital Singapore and Paxos Issuance Europe, Global Dollar Network offers a transparent and equitable economic model that rewards partners for their contributions.</p>
+    <p class="hero-desc">Global Dollar Network is the world's fastest-growing stablecoin network with unmatched economic upside. Powered by <a href="https://globaldollar.com/about-usdg" target="_blank" rel="noopener"><mark class="green-highlight">Global Dollar (USDG)</mark></a>, a US dollar-backed stablecoin issued by Paxos Digital Singapore and Paxos Issuance Europe, Global Dollar Network offers a transparent and equitable economic model that rewards partners for their contributions.</p>
     <div class="hero-updated" id="lastUpdated"></div>
   </section>
 
@@ -1089,23 +1093,26 @@ async function fetchMarketCap(days) {
   const loading = document.getElementById('chartLoading');
   loading.style.display = 'flex';
 
-  const daysParam = days === 'max' ? 'max' : days;
-  try {
-    // CoinGecko free API for USDG market cap
-    const url = `https://api.coingecko.com/api/v3/coins/global-dollar/market_chart?vs_currency=usd&days=${daysParam}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+  // CoinGecko free API doesn't reliably support 'max'; use 730 days to cover USDG's full history
+  const daysParam = days === 'max' ? 730 : days;
+  const coinIds = ['global-dollar', 'global-dollar-network'];
 
-    if (!res.ok) {
-      // Fallback: try with global-dollar-network ID
-      const url2 = `https://api.coingecko.com/api/v3/coins/global-dollar-network/market_chart?vs_currency=usd&days=${daysParam}`;
-      const res2 = await fetch(url2, { signal: AbortSignal.timeout(15000) });
-      if (!res2.ok) throw new Error(`CoinGecko HTTP ${res2.status}`);
-      const data2 = await res2.json();
-      chartData = data2.market_caps || [];
-    } else {
-      const data = await res.json();
-      chartData = data.market_caps || [];
+  try {
+    let fetched = false;
+    for (const coinId of coinIds) {
+      try {
+        const url = `https://api.coingecko.com/api/v3/coins/${coinId}/market_chart?vs_currency=usd&days=${daysParam}`;
+        const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+        if (!res.ok) continue;
+        const data = await res.json();
+        chartData = data.market_caps || [];
+        fetched = true;
+        break;
+      } catch (e) {
+        continue;
+      }
     }
+    if (!fetched) throw new Error('All CoinGecko IDs failed');
 
     // Filter out zero-value entries
     chartData = chartData.filter(d => d[1] > 0);
