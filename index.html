@@ -792,12 +792,12 @@
       Supply data is fetched directly from on-chain sources via public RPC endpoints.
       Native USDG is issued by <a href="https://paxos.com" target="_blank" rel="noopener">Paxos</a> on Ethereum, Solana, Ink, and X&nbsp;Layer.
       USDG0 represents bridged supply via <a href="https://layerzero.network" target="_blank" rel="noopener">LayerZero</a> OFT on additional networks.
-      Market cap data sourced from CoinGecko. Data refreshes automatically every 60 seconds.
+      Market cap data sourced from CoinGecko and DeFiLlama. Data refreshes automatically every 60 seconds.
     </p>
   </div>
 
   <footer>
-    <p>Data sourced from public on-chain RPCs &amp; CoinGecko</p>
+    <p>Data sourced from public on-chain RPCs, CoinGecko &amp; DeFiLlama</p>
     <a href="https://globaldollar.com" target="_blank" rel="noopener">globaldollar.com</a>
   </footer>
 
@@ -1055,9 +1055,50 @@ async function fetchAll() {
   isFetching = false;
 }
 
-// ── Hero Market Cap (from CoinGecko) ──────────────────────────────────────
+// ── DeFiLlama helper (fallback data source, no rate limits) ───────────────
+let defillamaId = null;
+let defillamaData = null;
+
+async function fetchDefillamaData() {
+  if (defillamaData) return defillamaData;
+
+  // Step 1: find USDG's numeric ID if we don't have it
+  if (!defillamaId) {
+    const listRes = await fetch('https://stablecoins.llama.fi/stablecoins?includePrices=true', { signal: AbortSignal.timeout(12000) });
+    if (!listRes.ok) throw new Error('DeFiLlama list HTTP ' + listRes.status);
+    const listData = await listRes.json();
+    const match = (listData.peggedAssets || []).find(c => c.symbol === 'USDG' || c.name === 'Global Dollar');
+    if (!match) throw new Error('USDG not found on DeFiLlama');
+    defillamaId = match.id;
+    console.log('[USDG] DeFiLlama ID:', defillamaId);
+  }
+
+  // Step 2: fetch historical data
+  const res = await fetch('https://stablecoins.llama.fi/stablecoin/' + defillamaId, { signal: AbortSignal.timeout(12000) });
+  if (!res.ok) throw new Error('DeFiLlama detail HTTP ' + res.status);
+  const detail = await res.json();
+
+  // Build [timestamp_ms, mcap] pairs from the tokens array
+  const tokens = detail.tokens || [];
+  const chartPoints = tokens
+    .map(t => {
+      const val = t.circulating?.peggedUSD;
+      return val > 0 ? [t.date * 1000, val] : null;
+    })
+    .filter(Boolean);
+
+  // Current market cap = last data point
+  const currentMcap = chartPoints.length > 0 ? chartPoints[chartPoints.length - 1][1] : null;
+
+  defillamaData = { chartPoints, currentMcap };
+  return defillamaData;
+}
+
+// ── Hero Market Cap ───────────────────────────────────────────────────────
 async function fetchHeroMarketCap() {
   const heroEl = document.getElementById('totalSupply');
+
+  // Try CoinGecko first
   try {
     const url = 'https://api.coingecko.com/api/v3/simple/price?ids=global-dollar&vs_currencies=usd&include_market_cap=true';
     const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
@@ -1067,9 +1108,21 @@ async function fetchHeroMarketCap() {
     if (entry && entry.usd_market_cap) {
       heroEl.classList.remove('loading');
       heroEl.textContent = '$' + fmt(Math.round(entry.usd_market_cap));
+      return;
     }
   } catch (e) {
-    console.warn('[USDG] Hero market cap fetch failed:', e.message);
+    console.warn('[USDG] CoinGecko hero failed:', e.message, '- trying DeFiLlama');
+  }
+
+  // Fallback: DeFiLlama
+  try {
+    const dl = await fetchDefillamaData();
+    if (dl.currentMcap) {
+      heroEl.classList.remove('loading');
+      heroEl.textContent = '$' + fmt(Math.round(dl.currentMcap));
+    }
+  } catch (e) {
+    console.warn('[USDG] DeFiLlama hero also failed:', e.message);
   }
 }
 
@@ -1084,6 +1137,7 @@ async function fetchChartHistory() {
   loading.textContent = 'Loading chart data...';
   loading.style.display = 'flex';
 
+  // Try CoinGecko first
   try {
     const url = 'https://api.coingecko.com/api/v3/coins/global-dollar/market_chart?vs_currency=usd&days=730';
     const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
@@ -1096,7 +1150,19 @@ async function fetchChartHistory() {
       return;
     }
   } catch (e) {
-    console.warn('[USDG] Chart fetch failed:', e.message);
+    console.warn('[USDG] CoinGecko chart failed:', e.message, '- trying DeFiLlama');
+  }
+
+  // Fallback: DeFiLlama
+  try {
+    const dl = await fetchDefillamaData();
+    if (dl.chartPoints && dl.chartPoints.length > 0) {
+      fullChartData = dl.chartPoints;
+      showChartRange(currentDays);
+      return;
+    }
+  } catch (e) {
+    console.warn('[USDG] DeFiLlama chart also failed:', e.message);
   }
 
   if (!fullChartData) {
