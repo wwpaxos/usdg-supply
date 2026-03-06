@@ -1038,6 +1038,14 @@ async function fetchAll() {
     }
   });
 
+  // Update hero with on-chain total as baseline (CoinGecko will overwrite if available)
+  heroEl.classList.remove('loading');
+  if (total > 0) {
+    heroEl.textContent = '$' + fmt(total);
+  } else if (heroEl.textContent === 'Loading...') {
+    heroEl.textContent = '\u2014';
+  }
+
   CHAINS.forEach(chain => updateCard(chain, supplies[chain.id], total));
 
   const ts = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -1053,79 +1061,68 @@ async function fetchHeroMarketCap() {
   try {
     const url = 'https://api.coingecko.com/api/v3/simple/price?ids=global-dollar&vs_currencies=usd&include_market_cap=true';
     const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
-    if (!res.ok) {
-      // Fallback ID
-      const url2 = 'https://api.coingecko.com/api/v3/simple/price?ids=global-dollar-network&vs_currencies=usd&include_market_cap=true';
-      const res2 = await fetch(url2, { signal: AbortSignal.timeout(10000) });
-      if (!res2.ok) throw new Error('CoinGecko HTTP ' + res2.status);
-      const data2 = await res2.json();
-      const entry = data2['global-dollar-network'];
-      if (entry && entry.usd_market_cap) {
-        heroEl.classList.remove('loading');
-        heroEl.textContent = '$' + fmt(Math.round(entry.usd_market_cap));
-        return;
-      }
-      throw new Error('No market cap in response');
-    }
+    if (!res.ok) throw new Error('CoinGecko HTTP ' + res.status);
     const data = await res.json();
     const entry = data['global-dollar'];
     if (entry && entry.usd_market_cap) {
       heroEl.classList.remove('loading');
       heroEl.textContent = '$' + fmt(Math.round(entry.usd_market_cap));
-    } else {
-      throw new Error('No market cap in response');
     }
   } catch (e) {
     console.warn('[USDG] Hero market cap fetch failed:', e.message);
-    // Fallback: leave whatever is there, or show dash
-    if (heroEl.textContent === 'Loading...') {
-      heroEl.classList.remove('loading');
-      heroEl.textContent = '\u2014';
-    }
   }
 }
 
 // ── Market Cap Chart ──────────────────────────────────────────────────────
-let chartData = null;
+let fullChartData = null; // full history, fetched once
+let chartData = null;     // current filtered view
 let currentDays = 90;
 
-async function fetchMarketCap(days) {
+// Fetch full history once, then slice locally for each time range
+async function fetchChartHistory() {
   const loading = document.getElementById('chartLoading');
+  loading.textContent = 'Loading chart data...';
   loading.style.display = 'flex';
 
-  // CoinGecko free API doesn't reliably support 'max'; use 730 days to cover USDG's full history
-  const daysParam = days === 'max' ? 730 : days;
-  const coinIds = ['global-dollar', 'global-dollar-network'];
-
   try {
-    let fetched = false;
-    for (const coinId of coinIds) {
-      try {
-        const url = `https://api.coingecko.com/api/v3/coins/${coinId}/market_chart?vs_currency=usd&days=${daysParam}`;
-        const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
-        if (!res.ok) continue;
-        const data = await res.json();
-        chartData = data.market_caps || [];
-        fetched = true;
-        break;
-      } catch (e) {
-        continue;
-      }
-    }
-    if (!fetched) throw new Error('All CoinGecko IDs failed');
-
-    // Filter out zero-value entries
-    chartData = chartData.filter(d => d[1] > 0);
-
-    if (chartData.length > 0) {
-      loading.style.display = 'none';
-      drawChart();
-    } else {
-      loading.textContent = 'No market cap data available';
+    const url = 'https://api.coingecko.com/api/v3/coins/global-dollar/market_chart?vs_currency=usd&days=730';
+    const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const caps = (data.market_caps || []).filter(d => d[1] > 0);
+    if (caps.length > 0) {
+      fullChartData = caps;
+      showChartRange(currentDays);
+      return;
     }
   } catch (e) {
-    console.warn('[USDG] Market cap fetch failed:', e.message);
-    loading.textContent = 'Market cap data unavailable';
+    console.warn('[USDG] Chart fetch failed:', e.message);
+  }
+
+  if (!fullChartData) {
+    loading.textContent = 'Chart data temporarily unavailable';
+  }
+}
+
+// Filter cached data by time range and render -- no API call needed
+function showChartRange(days) {
+  if (!fullChartData || fullChartData.length === 0) return;
+
+  const loading = document.getElementById('chartLoading');
+
+  if (days === 'max') {
+    chartData = fullChartData;
+  } else {
+    const cutoff = Date.now() - (days * 24 * 60 * 60 * 1000);
+    chartData = fullChartData.filter(d => d[0] >= cutoff);
+  }
+
+  if (chartData.length > 1) {
+    loading.style.display = 'none';
+    drawChart();
+  } else {
+    loading.textContent = 'No data for this range';
+    loading.style.display = 'flex';
   }
 }
 
@@ -1277,7 +1274,7 @@ document.querySelectorAll('.chart-range-btn').forEach(btn => {
     btn.classList.add('active');
     const days = btn.dataset.days === 'max' ? 'max' : parseInt(btn.dataset.days);
     currentDays = days;
-    fetchMarketCap(days);
+    showChartRange(days);
   });
 });
 
@@ -1592,17 +1589,21 @@ async function initTxFeed() {
 
 // ── Init ──────────────────────────────────────────────────────────────────
 buildCards();
-fetchHeroMarketCap();
 fetchAll();
-fetchMarketCap(currentDays);
 setupChartTooltip();
 initTxFeed();
 
+// Stagger CoinGecko calls to avoid rate limiting
+fetchHeroMarketCap();
+setTimeout(() => fetchChartHistory(), 4000);
+
 document.getElementById('refreshBtn').addEventListener('click', () => {
-  fetchHeroMarketCap();
   fetchAll();
-  fetchMarketCap(currentDays);
   fetchAllTransfers();
+  // Stagger CoinGecko calls on refresh
+  setTimeout(() => fetchHeroMarketCap(), 1000);
+  if (!fullChartData) setTimeout(() => fetchChartHistory(), 5000);
+  else showChartRange(currentDays);
 });
 
 // Auto-refresh: hero market cap every 30s, chain supply every 60s
